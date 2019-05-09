@@ -22,3 +22,4 @@ def mkdir(path):
         os.makedirs(path)
     else:
         print('exist path: ', path)
+

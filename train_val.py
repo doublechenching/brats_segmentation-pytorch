@@ -11,14 +11,40 @@ import os
 import torch
 from utils.logger import setup_logger
 from utils.metric_logger import MetricLogger
-from torch.nn import functional as F
 import logging
 import time
 from losses import get_losses
 from metrics import get_metrics
 import shutil
+import nibabel as nib
+import numpy as np
 
-def train_val(cfg, model, loaders, optimizer, scheduler, losses, metrics=None):
+def save_sample(batch_pred, batch_x, batch_y, epoch, batch_id):
+    def get_mask(seg_volume):
+        seg_volume = seg_volume.cpu().numpy()
+        seg_volume = np.squeeze(seg_volume)
+        wt_pred = seg_volume[0]
+        tc_pred = seg_volume[1]
+        et_pred = seg_volume[2]
+        mask = np.zeros_like(wt_pred)
+        mask[wt_pred > 0.5] = 2
+        mask[tc_pred > 0.5] = 1
+        mask[et_pred > 0.5] = 4
+        mask = mask.astype("uint8")
+        mask_nii = nib.Nifti1Image(mask, np.eye(4))
+        return mask_nii
+
+    volume = batch_x[:, 0].cpu().numpy()
+    volume = volume.astype("uint8")
+    volume_nii = nib.Nifti1Image(volume, np.eye(4))
+    log_dir = os.path.join(cfg.LOG_DIR, cfg.TASK_NAME, 'epoch'+str(epoch))
+    nib.save(volume_nii, os.path.join(log_dir, 'batch'+str(batch_id)+'_volume.nii'))
+    pred_nii = get_mask(batch_pred)
+    gt_nii = get_mask(batch_y)
+    nib.save(pred_nii, os.path.join(log_dir, 'batch' + str(batch_id) + '_pred.nii'))
+    nib.save(gt_nii, os.path.join(log_dir, 'batch' + str(batch_id) + '_gt.nii'))
+
+def train_val(model, loaders, optimizer, scheduler, losses, metrics=None):
     n_epochs = cfg.SOLVER.NUM_EPOCHS
     end = time.time()
     best_dice = 0.0
@@ -46,6 +72,8 @@ def train_val(cfg, model, loaders, optimizer, scheduler, losses, metrics=None):
                             hausdorff = metrics['hd']
                             metric_dict = hausdorff(output, batch_y)
                             meters.update(**metric_dict)
+                    if (epoch + 1) % 20:
+                        save_sample(output, batch_x, batch_y, epoch, batch_id)
                 logger.info(meters.delimiter.join([f"Epoch: {epoch}, Batch:{batch_id}/{total}",
                                                    f"{str(meters)}",
                                                    f"Time: {time.time() - end: .3f}"
@@ -58,8 +86,10 @@ def train_val(cfg, model, loaders, optimizer, scheduler, losses, metrics=None):
                 state['optimizer'] = optimizer.state_dict()
                 file_name = os.path.join(cfg.LOG_DIR, cfg.TASK_NAME, 'epoch' + str(epoch) + '.pt')
                 torch.save(state, file_name)
-                if dice < best_dice:
+                if dice > best_dice:
+                    best_dice = dice
                     shutil.copyfile(file_name, os.path.join(cfg.LOG_DIR, cfg.TASK_NAME, 'best_model.pth'))
+
     return model
 
 def main():
@@ -77,7 +107,7 @@ def main():
     optimizer, scheduler = make_optimizer(cfg, model)
     metrics = get_metrics(cfg)
     losses = get_losses(cfg)
-    train_val(cfg, model, loaders, optimizer, scheduler, losses, metrics)
+    train_val(model, loaders, optimizer, scheduler, losses, metrics)
 
 if __name__ == "__main__":
     main()
