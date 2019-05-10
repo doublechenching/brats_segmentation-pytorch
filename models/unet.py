@@ -93,13 +93,14 @@ class UNet3D(nn.Module):
                                     nn.ReLU(inplace=True),
                                     nn.Conv3d(init_channels * 8, self.squeeze_channels, (3, 3, 3), padding=(1, 1, 1)),
                                     )
+
         self.mu_fc = nn.Linear(self.squeeze_channels//2, self.squeeze_channels//2)
         self.logvar_fc = nn.Linear(self.squeeze_channels//2, self.squeeze_channels//2)
 
         self.glob_pool = nn.AdaptiveAvgPool3d(1)
         recon_shape = np.prod(self.input_shape) // (16 ** 3)
 
-        self.reconstraction = nn.Sequential(nn.Linear(self.squeeze_channels // 2, init_channels * 8 * recon_shape),
+        self.reconstraction = nn.Sequential(nn.Linear(self.squeeze_channels//2, init_channels * 8 * recon_shape),
                                             nn.ReLU(inplace=True))
 
         self.vup4 = nn.Sequential(nn.Conv3d(init_channels * 8, init_channels * 8, (1, 1, 1)),
