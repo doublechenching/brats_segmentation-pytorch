@@ -89,8 +89,12 @@ class UNet3D(nn.Module):
 
     def make_vae_decoder(self):
         init_channels = self.init_channels
-        self.vconv4 = nn.Sequential(nn.Conv3d(init_channels * 8, self.squeeze_channels, (3, 3, 3), padding=(1, 1, 1)),
-                                    nn.ReLU(inplace=True))
+        self.vconv4 = nn.Sequential(nn.GroupNorm(8, init_channels * 8),
+                                    nn.ReLU(inplace=True),
+                                    nn.Conv3d(init_channels * 8, self.squeeze_channels, (3, 3, 3), padding=(1, 1, 1)),
+                                    )
+        self.mu_fc = nn.Linear(self.squeeze_channels//2, self.squeeze_channels//2)
+        self.logvar_fc = nn.Linear(self.squeeze_channels//2, self.squeeze_channels//2)
 
         self.glob_pool = nn.AdaptiveAvgPool3d(1)
         recon_shape = np.prod(self.input_shape) // (16 ** 3)
@@ -125,9 +129,11 @@ class UNet3D(nn.Module):
         x = self.vconv4(x)
         x = self.glob_pool(x)
         batch_size = x.size()[0]
-        x = x.view((batch_size, self.squeeze_channels,))
-        mu = x[:, self.squeeze_channels // 2]
+        x = x.view((batch_size, self.squeeze_channels))
+        mu = x[:, :self.squeeze_channels // 2]
+        mu = self.mu_fc(mu)
         logvar = x[:, self.squeeze_channels // 2:]
+        logvar = self.logvar_fc(logvar)
         z = self.reparameterize(mu, logvar)
         c1 = self.reconstraction(z)
         recon_shape = [batch_size,

@@ -38,6 +38,7 @@ def save_sample(batch_pred, batch_x, batch_y, epoch, batch_id):
     volume = volume.astype("uint8")
     volume_nii = nib.Nifti1Image(volume, np.eye(4))
     log_dir = os.path.join(cfg.LOG_DIR, cfg.TASK_NAME, 'epoch'+str(epoch))
+    mkdir(log_dir)
     nib.save(volume_nii, os.path.join(log_dir, 'batch'+str(batch_id)+'_volume.nii'))
     pred_nii = get_mask(batch_pred)
     gt_nii = get_mask(batch_y)
@@ -67,18 +68,18 @@ def train_val(model, loaders, optimizer, scheduler, losses, metrics=None):
                     loss_dict['loss'].backward()
                     optimizer.step()
                 else:
-                    if metrics:
+                    if metrics and (epoch + 1) % 20 == 0:
                         with torch.no_grad():
                             hausdorff = metrics['hd']
                             metric_dict = hausdorff(output, batch_y)
                             meters.update(**metric_dict)
-                    if (epoch + 1) % 20:
                         save_sample(output, batch_x, batch_y, epoch, batch_id)
                 logger.info(meters.delimiter.join([f"Epoch: {epoch}, Batch:{batch_id}/{total}",
                                                    f"{str(meters)}",
                                                    f"Time: {time.time() - end: .3f}"
                                                    ]))
                 end = time.time()
+
             if phase == 'eval':
                 dice = 1 - (meters.wt_loss.global_avg + meters.tc_loss.global_avg + meters.et_loss.global_avg) / 3
                 state = {}
@@ -93,7 +94,7 @@ def train_val(model, loaders, optimizer, scheduler, losses, metrics=None):
     return model
 
 def main():
-    init_env('0')
+    init_env('1')
     loaders = make_data_loaders(cfg)
     model = build_model(cfg)
     model = model.cuda()

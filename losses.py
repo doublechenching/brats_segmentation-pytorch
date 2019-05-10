@@ -13,7 +13,7 @@ def dice_loss(input, target):
     tflat = target.view(-1)
     intersection = (iflat * tflat).sum()
 
-    return 1 - (2. * intersection / ((iflat ** 2).sum() + (tflat ** 2).sum() + eps))
+    return 1 - 2. * intersection / ((iflat ** 2).sum() + (tflat ** 2).sum() + eps)
 
 
 def vae_loss(recon_x, x, mu, logvar):
