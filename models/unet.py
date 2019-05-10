@@ -2,10 +2,11 @@
 # encoding: utf-8
 # @Time    : 2019/5/9 15:22
 # @Author  : Eric Ching
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
+
 
 class BasicBlock(nn.Module):
     def __init__(self, in_channels, out_channels, n_groups=8):
@@ -28,6 +29,80 @@ class BasicBlock(nn.Module):
 
         return x
 
+
+class VAEBranch(nn.Module):
+
+    def __init__(self, input_shape, init_channels, out_channels, squeeze_channels=None):
+        super(VAEBranch, self).__init__()
+        self.input_shape = input_shape
+
+        if squeeze_channels:
+            self.squeeze_channels = squeeze_channels
+        else:
+            self.squeeze_channels = init_channels * 4
+
+        self.hidden_conv = nn.Sequential(nn.GroupNorm(8, init_channels * 8),
+                                         nn.ReLU(inplace=True),
+                                         nn.Conv3d(init_channels * 8, self.squeeze_channels, (3, 3, 3),
+                                                   padding=(1, 1, 1)),
+                                         nn.AdaptiveAvgPool3d(1))
+
+        self.mu_fc = nn.Linear(self.squeeze_channels // 2, self.squeeze_channels // 2)
+        self.logvar_fc = nn.Linear(self.squeeze_channels // 2, self.squeeze_channels // 2)
+
+        recon_shape = np.prod(self.input_shape) // (16 ** 3)
+
+        self.reconstraction = nn.Sequential(nn.Linear(self.squeeze_channels // 2, init_channels * 8 * recon_shape),
+                                            nn.ReLU(inplace=True))
+
+        self.vconv4 = nn.Sequential(nn.Conv3d(init_channels * 8, init_channels * 8, (1, 1, 1)),
+                                    nn.Upsample(scale_factor=2))
+
+        self.vconv3 = nn.Sequential(nn.Conv3d(init_channels * 8, init_channels * 4, (3, 3, 3), padding=(1, 1, 1)),
+                                    nn.Upsample(scale_factor=2),
+                                    BasicBlock(init_channels * 4, init_channels * 4))
+
+        self.vconv2 = nn.Sequential(nn.Conv3d(init_channels * 4, init_channels * 2, (3, 3, 3), padding=(1, 1, 1)),
+                                    nn.Upsample(scale_factor=2),
+                                    BasicBlock(init_channels * 2, init_channels * 2))
+
+        self.vconv1 = nn.Sequential(nn.Conv3d(init_channels * 2, init_channels, (3, 3, 3), padding=(1, 1, 1)),
+                                    nn.Upsample(scale_factor=2),
+                                    BasicBlock(init_channels, init_channels))
+
+        self.vconv0 = nn.Conv3d(init_channels, out_channels, (1, 1, 1))
+
+    def reparameterize(self, mu, logvar):
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+
+        return eps.mul(std).add_(mu)
+
+    def forward(self, x):
+        x = self.hidden_conv(x)
+        batch_size = x.size()[0]
+        x = x.view((batch_size, -1))
+        mu = x[:, :self.squeeze_channels // 2]
+        mu = self.mu_fc(mu)
+        logvar = x[:, self.squeeze_channels // 2:]
+        logvar = self.logvar_fc(logvar)
+        z = self.reparameterize(mu, logvar)
+        re_x = self.reconstraction(z)
+        recon_shape = [batch_size,
+                       self.squeeze_channels // 2,
+                       self.input_shape[0] // 16,
+                       self.input_shape[1] // 16,
+                       self.input_shape[2] // 16]
+        re_x = re_x.view(recon_shape)
+        x = self.vconv4(re_x)
+        x = self.vconv3(x)
+        x = self.vconv2(x)
+        x = self.vconv1(x)
+        vout = self.vconv0(x)
+
+        return vout, mu, logvar
+
+
 class UNet3D(nn.Module):
     """3d unet
     Ref:
@@ -38,14 +113,12 @@ class UNet3D(nn.Module):
 
     def __init__(self, input_shape, in_channels=4, out_channels=3, init_channels=32, p=0.2):
         super(UNet3D, self).__init__()
-        self.squeeze_channels = 256
         self.input_shape = input_shape
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.init_channels = init_channels
         self.make_encoder()
         self.make_decoder()
-        self.make_vae_decoder()
         self.dropout = nn.Dropout(p=p)
 
     def make_encoder(self):
@@ -87,72 +160,6 @@ class UNet3D(nn.Module):
 
         self.up1conv = nn.Conv3d(init_channels, self.out_channels, (1, 1, 1))
 
-    def make_vae_decoder(self):
-        init_channels = self.init_channels
-        self.vconv4 = nn.Sequential(nn.GroupNorm(8, init_channels * 8),
-                                    nn.ReLU(inplace=True),
-                                    nn.Conv3d(init_channels * 8, self.squeeze_channels, (3, 3, 3), padding=(1, 1, 1)),
-                                    )
-
-        self.mu_fc = nn.Linear(self.squeeze_channels//2, self.squeeze_channels//2)
-        self.logvar_fc = nn.Linear(self.squeeze_channels//2, self.squeeze_channels//2)
-
-        self.glob_pool = nn.AdaptiveAvgPool3d(1)
-        recon_shape = np.prod(self.input_shape) // (16 ** 3)
-
-        self.reconstraction = nn.Sequential(nn.Linear(self.squeeze_channels//2, init_channels * 8 * recon_shape),
-                                            nn.ReLU(inplace=True))
-
-        self.vup4 = nn.Sequential(nn.Conv3d(init_channels * 8, init_channels * 8, (1, 1, 1)),
-                                  nn.Upsample(scale_factor=2))
-
-        self.vconv3 = nn.Sequential(nn.Conv3d(init_channels * 8, init_channels * 4, (3, 3, 3), padding=(1, 1, 1)),
-                                    nn.Upsample(scale_factor=2),
-                                    BasicBlock(init_channels * 4, init_channels * 4))
-
-        self.vconv2 = nn.Sequential(nn.Conv3d(init_channels * 4, init_channels * 2, (3, 3, 3), padding=(1, 1, 1)),
-                                    nn.Upsample(scale_factor=2),
-                                    BasicBlock(init_channels * 2, init_channels * 2))
-
-        self.vconv1 = nn.Sequential(nn.Conv3d(init_channels * 2, init_channels, (3, 3, 3), padding=(1, 1, 1)),
-                                    nn.Upsample(scale_factor=2),
-                                    BasicBlock(init_channels, init_channels))
-
-        self.vconv0 = nn.Conv3d(init_channels, self.in_channels, (1, 1, 1))
-
-    def reparameterize(self, mu, logvar):
-        std = torch.exp(0.5 * logvar)
-        eps = torch.randn_like(std)
-
-        return eps.mul(std).add_(mu)
-
-    def forward_vae_decoder(self, x):
-        x = self.vconv4(x)
-        x = self.glob_pool(x)
-        batch_size = x.size()[0]
-        x = x.view((batch_size, self.squeeze_channels))
-        mu = x[:, :self.squeeze_channels // 2]
-        mu = self.mu_fc(mu)
-        logvar = x[:, self.squeeze_channels // 2:]
-        logvar = self.logvar_fc(logvar)
-        z = self.reparameterize(mu, logvar)
-        c1 = self.reconstraction(z)
-        recon_shape = [batch_size,
-                       self.squeeze_channels // 2,
-                       self.input_shape[0] // 16,
-                       self.input_shape[1] // 16,
-                       self.input_shape[2] // 16]
-
-        c1 = c1.view(recon_shape)
-        c1 = self.vup4(c1)
-
-        x = self.vconv3(c1)
-        x = self.vconv2(x)
-        x = self.vconv1(x)
-        vout = self.vconv0(x)
-
-        return vout, mu, logvar
-
     def forward(self, x):
         c1 = self.conv1a(x)
         c1 = self.conv1b(c1)
@@ -173,8 +180,6 @@ class UNet3D(nn.Module):
 
         c4d = self.dropout(c4d)
 
-        vout, mu, logvar = self.forward_vae_decoder(c4d)
-
         u4 = self.up4conva(c4d)
         u4 = self.up4(u4)
         u4 = u4 + c3
@@ -192,5 +197,19 @@ class UNet3D(nn.Module):
 
         uout = self.up1conv(u2)
         uout = F.sigmoid(uout)
+
+        return uout, c4d
+
+
+class UnetVAE3D(nn.Module):
+
+    def __init__(self, input_shape, in_channels=4, out_channels=3, init_channels=32, p=0.2):
+        super(UnetVAE3D, self).__init__()
+        self.unet = UNet3D(input_shape, in_channels, out_channels, init_channels, p)
+        self.vae_branch = VAEBranch(input_shape, init_channels, out_channels=in_channels)
+
+    def forward(self, x):
+        uout, c4d = self.unet(x)
+        vout, mu, logvar = self.vae_branch(c4d)
 
         return uout, vout, mu, logvar
